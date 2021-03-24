@@ -197,13 +197,13 @@ class Dirphy:
         # for every protein in the list
         prot_list = set(self.annot_df['protein'])
         for prot in prot_list:
-            onagi_prot[prot] = set([Dirphy.rename(x) for x in self.annot_df.loc[self.annot_df['protein'] == prot]['ID']])
+            onagi_prot[prot] = set([Dirphy.rename(x) for x in self.annot_df.loc[self.annot_df['protein'] == prot]['ID']]) & self.seqs
             this_match_dic = {}
             for x in onagi_prot[prot]:
                 this_org = str(self.annot_df.loc[self.annot_df['ID'] == x]['organism'].values[0])
                 # same organism but different protein
                 same_o_diff_p = (self.annot_df['protein'] != prot) & (self.annot_df['organism'] == this_org)
-                this_match_dic[x] = set([Dirphy.rename(x) for x in self.annot_df.loc[same_o_diff_p]['ID']])
+                this_match_dic[x] = set([Dirphy.rename(x) for x in self.annot_df.loc[same_o_diff_p]['ID']]) & self.seqs
             matching_prot[prot] = this_match_dic
         return onagi_prot, matching_prot
 
@@ -227,7 +227,7 @@ class Dirphy:
             if this_prot == "no_label":
                 continue
 
-            other_proteins = [p for p in self.orthologs.keys() if p != this_prot]
+            other_proteins = [p for p in self.orthologs.keys() if p != this_prot and self.orthologs[p]]
             for other_prot in other_proteins:
                 this_comparison = "{}vs{}".format(this_prot, other_prot)
                 this_name_list_out = []
@@ -375,7 +375,7 @@ class Dirphy:
         string_out_file = open(string_out_file_path, 'w')
         string_out_file.write("".join(self.output_string_list))
         df = pd.DataFrame(self.output_df_dict)  # NEED TO ADD THE STUFF
-        df.T.to_csv(csv_out_file_path, sep="\t")
+        df.T.to_csv(csv_out_file_path, sep=",")
 
     @staticmethod
     def find_conservation_blosum(pos, seqlist):

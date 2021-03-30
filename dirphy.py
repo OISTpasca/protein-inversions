@@ -5,6 +5,9 @@ from Bio.SubsMat import MatrixInfo
 import os
 import argparse
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
 
 def create_parser(argv):
     """Create a command line parser with all arguments defined"""
@@ -78,10 +81,19 @@ class Dirphy:
 
         # output
         self.output_path = args.output
-        self.output_df_counter = 0
-        self.output_df_dict = {}
-        self.output_df = pd.DataFrame()
-        self.output_string_list = []
+        # meta output
+        self.output_df_counter_meta = 0
+        self.output_df_dict_meta = {}
+        self.output_df_meta = pd.DataFrame()
+        self.output_string_list_meta = []
+        # ss out
+        self.output_df_counter_ss = 0
+        self.output_df_dict_ss = {}
+        self.output_df_ss = pd.DataFrame()
+        self.output_string_list_ss = []
+
+        # utilities
+        self.AAlist = list('ACDEFGHIKLMNPQRSTVWY')
 
     def get_sequence_dict(self, args):
         """
@@ -151,8 +163,9 @@ class Dirphy:
         """
         seqrun = self.seqs
         if args.specify_cluster_center:
-            assert args.specify_cluster_center in self.seqs
-            seqrun = args.specify_cluster_center
+            args.specify_cluster_center = Dirphy.rename(args.specify_cluster_center)
+            assert args.specify_cluster_center in self.seqs, "cluster center not found in {}".format(self.seqs)
+            seqrun = [args.specify_cluster_center]
 
         seqgroup = []
         if args.specify_cluster_set:
@@ -230,7 +243,8 @@ class Dirphy:
             other_proteins = [p for p in self.orthologs.keys() if p != this_prot and self.orthologs[p]]
             for other_prot in other_proteins:
                 this_comparison = "{}vs{}".format(this_prot, other_prot)
-                this_name_list_out = []
+                this_name_list_out_meta = []
+                this_name_list_out_ss = []
                 for i in range(len(self.ds[name])):  # for each position of the alignment
                     # skip position if we reached the max pos and it's not "-1"
                     if i > self.MAX_POS != -1:
@@ -249,14 +263,17 @@ class Dirphy:
                     # starting conservation
                     compare_score = self.get_compare_score(this_prot_orthologs, other_prot_orthologs, pos, other_pos, i)
 
-                    best_score = 0.0
-                    best_report = ""
+                    best_score_meta = 0.0
+                    best_report_meta = ""
+                    best_score_ss = 0.0
+                    best_report_ss = ""
                     swap_set = set()
                     # we add two new groups for conservation measure, this_swap, other_swap
                     this_prot_swap = set()
                     other_prot_swap = set()
 
-                    out_str = ""
+                    out_str_meta = ""
+                    out_str_ss = ""
 
                     # get the sorted list of neighbours for this ID
                     swap_list = sorted([(self.dm[name][lab], lab) for lab in list(self.dm[name].keys()) if self.dm[name][lab] <= self.MAX_DISTANCE])
@@ -278,23 +295,39 @@ class Dirphy:
                                 other_prot_orthologs.remove(lab)
                         swap_set.add(ID)
 
-                        # SWAP SCORE
-                        this_score, report = self.get_new_score(this_prot_orthologs, other_prot_orthologs, this_prot_swap, other_prot_swap, pos, other_pos, i)
-                        if this_score > best_score:
-                            best_score = this_score
-                            best_report = report
-                            out_str = "test: {}; pos {}: {}; other_pos: {}; score: {:.2}; conservations: {:.2}-{:.2}; protein: {}; name: {}; swap_set: {}; report: {}".format(
-                                this_comparison, i + 1, pos, other_pos, best_score, compare_score[0], compare_score[1], this_prot, name,
-                                ",".join(swap_set), ",".join(report))
-
-                    if best_score >= self.MIN_DIFF:  # and outer_score >= MIN_OUT_SCORE:
-                        this_name_list_out.append(out_str)
-                        self.output_df_dict[self.output_df_counter] = {"test": this_comparison, "pos": i + 1, "residue": pos, "pos_residue": "{}{}".format(i + 1, pos),
-                                                     "other_pos": other_pos, "name": name, "score": best_score, "protein": this_prot,
+                        # META SCORE
+                        this_score_meta, this_score_ss, report_meta, report_ss = self.get_new_score(this_prot_orthologs, other_prot_orthologs, this_prot_swap, other_prot_swap, i)
+                        if this_score_meta > best_score_meta:
+                            best_score_meta = this_score_meta
+                            best_report_meta = report_meta
+                            out_str_meta = "test: {}; pos {}: {}; other_pos: {}; score: {:.2}; conservations: {:.2}-{:.2}; protein: {}; name: {}; swap_set: {}; report: {}".format(
+                                this_comparison, i + 1, pos, other_pos, best_score_meta, compare_score[0], compare_score[1], this_prot, name,
+                                ",".join(swap_set), report_meta)
+                        # SS SCORE
+                        if this_score_ss > best_score_ss:
+                            best_score_ss = this_score_ss
+                            best_report_ss = report_ss
+                            out_str_ss = "test: {}; pos {}: {}; other_pos: {}; score: {:.2}; conservations: {:.2}-{:.2}; protein: {}; name: {}; swap_set: {}; report: {}".format(
+                                this_comparison, i + 1, pos, other_pos, best_score_ss, compare_score[0], compare_score[1], this_prot, name,
+                                ",".join(swap_set), report_ss)
+                    # update meta output
+                    if best_score_meta >= self.MIN_DIFF:  # and outer_score >= MIN_OUT_SCORE:
+                        this_name_list_out_meta.append(out_str_meta)
+                        self.output_df_dict_meta[self.output_df_counter_meta] = {"test": this_comparison, "pos": i + 1, "residue": pos, "pos_residue": "{}{}".format(i + 1, pos),
+                                                     "other_pos": other_pos, "name": name, "score": best_score_meta, "protein": this_prot,
                                                      "conservation": "{:.2}-{:.2}".format(compare_score[0], compare_score[1]),
-                                                     "swap_set": ",".join(swap_set), "report": ",".join(best_report)}
-                        self.output_df_counter += 1
-                self.output_string_list.append("{}\n{}\n".format(name, "\n".join(this_name_list_out)))
+                                                     "swap_set": ",".join(swap_set), "report": best_report_meta}
+                        self.output_df_counter_meta += 1
+                    # update ss output
+                    if best_score_ss >= self.MIN_DIFF:  # and outer_score >= MIN_OUT_SCORE:
+                        this_name_list_out_ss.append(out_str_ss)
+                        self.output_df_dict_ss[self.output_df_counter_ss] = {"test": this_comparison, "pos": i + 1, "residue": pos, "pos_residue": "{}{}".format(i + 1, pos),
+                                                     "other_pos": other_pos, "name": name, "score": best_score_ss, "protein": this_prot,
+                                                     "conservation": "{:.2}-{:.2}".format(compare_score[0], compare_score[1]),
+                                                     "swap_set": ",".join(swap_set), "report": best_report_ss}
+                        self.output_df_counter_ss += 1
+                self.output_string_list_meta.append("{}\n{}\n".format(name, "\n".join(this_name_list_out_meta)))
+                self.output_string_list_ss.append("{}\n{}\n".format(name, "\n".join(this_name_list_out_ss)))
 
     def get_compare_score(self, this_prot_orthologs, other_prot_orthologs, pos, other_pos, i):
         """
@@ -320,7 +353,7 @@ class Dirphy:
 
         return this_score, other_score
 
-    def get_new_score(self, this_prot, other_prot, this_prot_swap, other_prot_swap, pos, other_pos, i):
+    def get_new_score(self, this_prot, other_prot, this_prot_swap, other_prot_swap, i):
         """
         #now t7: compare the swapping pos conservation and the clone combaciante conservation, all scores are positive
         t7.5: like t7, but get the minimum of the 4 scores times 4
@@ -331,12 +364,7 @@ class Dirphy:
         :param compare_scores:
         :return:
         """
-
-        report = ["0"] * 4
-        check = pos + other_pos
-        if "-" in check or "X" in check or len(check) < 2:  # if the position is a gap or one is empty return 0
-            return 0.0, report
-
+        report = ""
         this_prot_str = "".join([self.ds[x][i] for x in this_prot])
         other_prot_str = "".join([self.ds[x][i] for x in other_prot])
         this_prot_swap_str = "".join([self.ds[x][i] for x in this_prot_swap])
@@ -344,24 +372,81 @@ class Dirphy:
 
         # if the length of gapless column is zero, just return score zero
         if any([len(x.replace("-","")) == 0 for x in [this_prot_str,other_prot_str,this_prot_swap_str, other_prot_swap_str]]):
-            return 0.0, report
+            return 0.0, 0.0, report, report
         # find if both strings pass the min cover setting, otherwise score is zero
         non_gap_percent = lambda x: len(x.replace("-", "")) / len(x)
         if non_gap_percent(this_prot_str) < self.MIN_COVER or non_gap_percent(other_prot_str) < self.MIN_COVER:
-            return 0.0, report
-        if pos == other_pos:  # no swap if it's the same pos
-            return 0.0, report
+            return 0.0, 0.0, report, report
 
         # calculate the conservation scores
-        this_prot_score = self.CONS_SCORE_FUNC(other_pos, this_prot_str)            # the other pos in this orthologs
-        other_prot_score = self.CONS_SCORE_FUNC(pos, other_prot_str)                # this pos in the other orthologs
-        this_prot_swap_score = self.CONS_SCORE_FUNC(other_pos, this_prot_swap_str)  # the other pos in this swap group
-        other_prot_swap_score = self.CONS_SCORE_FUNC(pos, other_prot_swap_str)      # this pos in the other swap group
+        best_score_meta, best_score_ss, report_meta, report_ss = self.compute_joint_probability(this_prot_str,other_prot_str,this_prot_swap_str,other_prot_swap_str)
 
-        best_score = min([this_prot_score, other_prot_score, this_prot_swap_score, other_prot_swap_score])
+        return best_score_meta, best_score_ss, report_meta, report_ss
 
-        report = [str(x) for x in (this_prot_score, other_prot_score, this_prot_swap_score, other_prot_swap_score)]
-        return best_score, report
+    def compute_joint_probability(self, this_prot_str, other_prot_str, this_prot_swap_str, other_prot_swap_str):
+        """
+        function to compute the joint probabilities of having a swapped residue
+        basically calculates the sum of (Ai*ci * (1-bi*di) or the same for SS
+
+        by definition, meta is a swap between this swap (b) and other swap (c), while SS is a swap between this (a) and this swap (b)
+        the result is the following matchings:
+        META: a with c, b with d
+        SS: a with d, b with c
+
+           a (this_prot)
+        -[
+       |   b (this_swap_prot)
+      -|
+       |   c (other_swap_prot)
+        -[
+           d (other_prot)
+        """
+        rl = range(20)  # this should be the length of the arrays (20 aa)
+        report_meta = []
+        report_ss = []
+        meta_score = 0
+        ss_score = 0
+
+        a  = self.frequency_array(this_prot_str)
+        d  = self.frequency_array(other_prot_str)
+        b  = self.frequency_array(this_prot_swap_str)
+        c  = self.frequency_array(other_prot_swap_str)
+        assert all([len(x) == 20 for x in [a, b, c, d]]), "WTF the length is not 20?!"
+
+        # matching probabilities
+        Pac = sum([a[i] * c[i] for i in rl])
+        Pbd = sum([b[i] * d[i] for i in rl])
+        Pad = sum([a[i] * d[i] for i in rl])
+        Pbc = sum([b[i] * c[i] for i in rl])
+
+        for i in range(len(a)):
+            if Pac and Pbd:  # non zero matching probabilities
+                Padd_meta = (a[i] * c[i] / Pac) * (1 - (b[i] * d[i] / Pbd))
+                report_meta.append("{0}:{1:.2f}".format(self.AAlist[i], Padd_meta))
+                meta_score += Padd_meta
+            if Pad and Pbc:  # non zero matching probabilities
+                Padd_ss = (a[i] * d[i] / Pad) * (1 - (b[i] * c[i] / Pbc))
+                report_ss.append("{}:{:.2f}".format(self.AAlist[i], Padd_ss))
+                ss_score += Padd_ss
+
+        # with this correction, we calculate the joint probability from the conditional probability
+        meta_score *= Pac * Pbd
+        ss_score *= Pad * Pbc
+
+        # report is the added prob for each AA
+        report_meta = ";".join(report_meta)
+        report_ss = ";".join(report_ss)
+        return meta_score, ss_score, report_meta, report_ss
+
+    def frequency_array(self, array):
+        """
+        return the array in single letter amino acid order of the frequency of occurrences given the list
+        :param array:
+        :return:
+        """
+        count = Counter(array)
+        sum_arr = sum(count.values())
+        return [count.get(x, 0)/sum_arr for x in self.AAlist]
 
     def save_output(self):
         """
@@ -370,12 +455,26 @@ class Dirphy:
         :param outdf_dict:
         :return:
         """
-        csv_out_file_path = self.output_path + "swapping_residues.csv"
-        string_out_file_path = self.output_path + "swapping_residues.txt"
+        # meta
+        csv_out_file_path = self.output_path + "inverted_residues_meta.csv"
+        string_out_file_path = self.output_path + "inverted_residues_meta.txt"
+        dist_plot_meta = self.output_path + "score_distribution_meta.png"
         string_out_file = open(string_out_file_path, 'w')
-        string_out_file.write("".join(self.output_string_list))
-        df = pd.DataFrame(self.output_df_dict)  # NEED TO ADD THE STUFF
+        string_out_file.write("".join(self.output_string_list_meta))
+        df = pd.DataFrame(self.output_df_dict_meta)  # NEED TO ADD THE STUFF
         df.T.to_csv(csv_out_file_path, sep=",")
+        ax = sns.displot(data=df.T, x='score')
+        plt.savefig(dist_plot_meta)
+        # ss
+        csv_out_file_path = self.output_path + "inverted_residues_ss.csv"
+        string_out_file_path = self.output_path + "inverted_residues_ss.txt"
+        dist_plot_ss = self.output_path + "score_distribution_ss.png"
+        string_out_file = open(string_out_file_path, 'w')
+        string_out_file.write("".join(self.output_string_list_ss))
+        df = pd.DataFrame(self.output_df_dict_ss)  # NEED TO ADD THE STUFF
+        df.T.to_csv(csv_out_file_path, sep=",")
+        ax = sns.displot(data=df.T, x='score')
+        plt.savefig(dist_plot_ss)
 
     @staticmethod
     def find_conservation_blosum(pos, seqlist):

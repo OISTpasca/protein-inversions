@@ -76,6 +76,7 @@ class Dirphy:
         self.seqrun, self.seqgroup = self.get_run_IDs(args)
         # annotation
         self.annot_df = self.get_annotation(args)
+        self.org_dict = self.get_organism_dictionary()
         # orthologs / paralogs dictionaries
         self.orthologs, self.paralogs = self.get_matching_paralogs_dics(args)
 
@@ -154,6 +155,12 @@ class Dirphy:
             df = pd.read_csv(args.annotation_file, names=colnames)
         df['ID'] = df['ID'].apply(Dirphy.rename)
         return df
+
+    def get_organism_dictionary(self):
+        od = {}
+        for i in self.annot_df.index:
+            od[self.annot_df['ID'][i]] = self.annot_df['organism'][i]
+        return od
 
     def get_run_IDs(self, args):
         """
@@ -293,7 +300,7 @@ class Dirphy:
                             if lab in other_prot_orthologs:
                                 other_prot_swap.add(lab)
                                 other_prot_orthologs.remove(lab)
-                        swap_set.add(ID)
+                        swap_set.add("{}".format(self.org_dict[ID]))
 
                         # META SCORE
                         this_score_meta, this_score_ss, report_meta, report_ss = self.get_new_score(this_prot_orthologs, other_prot_orthologs, this_prot_swap, other_prot_swap, i)

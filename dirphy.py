@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
 
+
 def create_parser(argv):
     """Create a command line parser with all arguments defined"""
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, fromfile_prefix_chars='@')
@@ -26,7 +27,7 @@ def create_parser(argv):
                         type=float)
     parser.add_argument('--max-codon-pos', help='the last codon position to check (right limit)', default=-1,
                         type=int)
-    parser.add_argument('--min-coverage', help='if more gap frequency than this parameter (0 to 1) then swapping score is 0', default=0,
+    parser.add_argument('--min-coverage', help='if more gap frequency than this parameter (0 to 1) then swapping score is 0', default=0.01,
                         type=float)
     parser.add_argument('--max-swapset', help='max number of elements in swap set', default=999, type=int)
     parser.add_argument('--pseudocounts', help='whether using the pseudocounts correction of the aa freq.', default=True)
@@ -484,7 +485,8 @@ class Dirphy:
         d = self.frequency_array(other_prot_str)
         b = self.frequency_array(this_prot_swap_str)
         c = self.frequency_array(other_prot_swap_str)
-        assert all([len(x) == 20 for x in [a, b, c, d]]), "WTF the length is not 20?!"
+        if not all([len(x) == 20 for x in [a, b, c, d]]): # full gap column...
+            return 0,0,"",""
 
         # matching probabilities
         Pac = sum([a[i] * c[i] for i in rl])
@@ -523,6 +525,8 @@ class Dirphy:
         del(count['-'])
         del(count['X'])
         sum_arr = sum(count.values())
+        if sum_arr == 0:
+            return []
         freq_arr = [count.get(x, 0)/sum_arr for x in self.AAlist]
         assert round(sum(freq_arr),3) == 1, "the sum of all frequencies is not 1, {}".format(count)
         alpha = sum_arr
@@ -599,13 +603,14 @@ class Dirphy:
 
     @staticmethod
     def find_conservation_identity(pos, seqlist):
-        aa_seqlist = [x for x in seqlist if x != "-"]
 
+        aa_seqlist = [x for x in seqlist if x != "-"]
         return aa_seqlist.count(pos) / len(aa_seqlist)
 
     @staticmethod    # rename so that it's the same as the phylotree names (ugly spaces ugh)
     def rename(name):
         return name.replace("_", " ").replace("|", " ")
+
 
 def main(argv):
 
@@ -645,6 +650,7 @@ def output_preparation(args):
     # save args
     with open(args.output + "args_report.txt", "w") as argfile:
         argfile.write("\n".join(["{} -> {}".format(k, v) for k, v in vars(args).items()]))
+
 
 if __name__ == '__main__':
     main(sys.argv)

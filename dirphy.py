@@ -27,7 +27,7 @@ def create_parser(argv):
                         type=float)
     parser.add_argument('--max-codon-pos', help='the last codon position to check (right limit)', default=-1,
                         type=int)
-    parser.add_argument('--min-coverage', help='if more gap frequency than this parameter (0 to 1) then swapping score is 0', default=0.01,
+    parser.add_argument('--min-coverage', help='if more gap frequency than this parameter (0 to 1) then swapping score is 0', default=0.1,
                         type=float)
     parser.add_argument('--max-swapset', help='max number of elements in swap set', default=999, type=int)
     parser.add_argument('--pseudocounts', help='whether using the pseudocounts correction of the aa freq.', default=True)
@@ -35,7 +35,9 @@ def create_parser(argv):
     parser.add_argument('--cons-score-function', help='identity: percentage identity (0-1); blosum: blosum score (0-1)', default='blosum')
 
     parser.add_argument('--specify-cluster-center', help='must be an ID of the alignment. Only the swaps of groups from this ID will be computed', default='')
-    parser.add_argument('--specify-cluster-set', help='must be a comma separated list of ID. Only the swaps of this group will be computed', default='')
+    parser.add_argument('--specify-cluster-set', help='must be a comma separated list of organisms. Only the organisms of this group will be computed', default='')
+    parser.add_argument('--specify-cluster-name', help='the name of the specified set of species', default="Group X")
+    parser.add_argument('--specify-root-node', help='the root node of the provided tree', default='midpoint')
     parser.add_argument('--multi-protein-approach',
                         help='The approach when more than 2 proteins (e.g. duplicates) are present. Conservative: only '+
                              'compares pairs of proteins. Inclusive: tries to match other pairs', default='Conservative')
@@ -77,11 +79,13 @@ class Dirphy:
         # seqs
         self.tree_seqs = set(self.dm.keys())
         self.seqs = set([x for x in self.ds.keys() if x in self.tree_seqs])
-        # run IDs
-        self.seqrun, self.seqgroup = self.get_run_IDs(args)
         # annotation
         self.annot_df = self.get_annotation(args)
         self.org_dict = self.get_organism_dictionary()
+        self.organisms = set(self.org_dict.values())
+        # run IDs
+        self.seqrun, self.seqgroup = self.get_run_IDs(args)
+        self.groupname = args.specify_cluster_name
         # orthologs / paralogs dictionaries
         self.orthologs, self.paralogs = self.get_matching_paralogs_dics(args)
 
@@ -105,6 +109,14 @@ class Dirphy:
         self.beta = 5
         self.BGprob = self.get_aa_background()
         self.qij_mat, self.qij_sum = self.get_qij_matrix()
+
+        # if a group, calculate the base probability, only 2 prots
+        if len([x for x in self.orthologs.keys() if x is not np.nan]) == 2:
+            self.p1, self.p2 = [x for x in self.orthologs.keys() if x is not np.nan]
+            self.base_prob_calc = BGprob()
+            self.base_prob = self.calculate_base_prob()
+
+
 
     def get_sequence_dict(self, args):
         """
@@ -151,6 +163,13 @@ class Dirphy:
             tree = dendropy.Tree.get(
                 path=args.tree_file,
                 schema="newick")
+
+        root_node = args.specify_root_node
+        if root_node == "midpoint":
+            tree.reroot_at_midpoint()
+        else:
+            outgroup_node = tree.find_node_with_taxon_label(Dirphy.rename(root_node))
+            tree.to_outgroup_position(outgroup_node)
         return tree
 
     def get_annotation(self, args):
@@ -187,7 +206,7 @@ class Dirphy:
         seqgroup = []
         if args.specify_cluster_set:
             seqgroup = args.specify_cluster_set.split(",")
-            assert all([x in self.seqs for x in seqgroup])
+            assert all([x in self.organisms for x in seqgroup])
         return seqrun, seqgroup
 
     def get_output_df(self):
@@ -301,6 +320,42 @@ class Dirphy:
                 counter += 1
         return qij_mat, [sum([x[i] for x in qij_mat]) for i in range(20)]
 
+    def calculate_lengths(self):
+        """
+        calculates the lengths given the groupings of seqgroup
+        :return:
+        """
+
+        L1,L2 = 0,0
+
+        # L1 is the average length of the distance from root (duplication) to speciation
+
+        tax_a1 = [x for x in self.orthologs[self.p1]]
+        tax_a2 = [x for x in self.orthologs[self.p2]]
+        a1 = self.tree.mrca(taxon_labels=tax_a1).distance_from_root()
+        a2 = self.tree.mrca(taxon_labels=tax_a2).distance_from_root()
+
+        L1 = np.mean([a1,a2])
+
+        # L2 is the average length of the distance from speciation to the end
+        a3 = self.tree.mrca(taxon_labels=tax_a1).distance_from_tip()
+        a4 = self.tree.mrca(taxon_labels=tax_a2).distance_from_tip()
+
+        L2 = np.mean([a3,a4])
+
+        return L1,L2
+
+    def calculate_base_prob(self):
+        """
+        calculates the base prob only if the grouping is specified
+        :return:
+        """
+
+        if not self.seqgroup or len([x for x in self.orthologs if x is not np.nan]) > 2:  # for now, only specified groups of a comparison of 2
+            return 0
+
+        L1, L2 = self.calculate_lengths()
+        return self.base_prob_calc.calculate_prob(L1,L2)
 
     def run_analysis(self):
         """
@@ -317,6 +372,7 @@ class Dirphy:
             other_proteins = [p for p in self.orthologs.keys() if p != this_prot and self.orthologs[p]]
             for other_prot in other_proteins:
                 this_comparison = "{}vs{}".format(this_prot, other_prot)
+                #avg_intra, avg_extra = self.calculate_average_distance(this_prot, other_prot)
                 this_name_list_out_meta = []
                 this_name_list_out_ss = []
                 for i in range(len(self.ds[name])):  # for each position of the alignment
@@ -341,36 +397,39 @@ class Dirphy:
                     best_report_meta = ""
                     best_score_ss = 0.0
                     best_report_ss = ""
-                    swap_set = set()
-                    # we add two new groups for conservation measure, this_swap, other_swap
-                    this_prot_swap = set()
-                    other_prot_swap = set()
 
                     out_str_meta = ""
                     out_str_ss = ""
 
                     # get the sorted list of neighbours for this ID
-                    swap_list = sorted([(self.dm[name][lab], lab) for lab in list(self.dm[name].keys()) if self.dm[name][lab] <= self.MAX_DISTANCE])
-                    for _, ID in swap_list:
-                        if len(swap_set) >= self.MAX_SWAPSET:  # break if reach the limit of dimension of swapset
+                    swap_order = sorted([(self.dm[name][lab], lab) for lab in list(self.dm[name].keys()) if self.dm[name][lab] <= self.MAX_DISTANCE])
+                    swap_list = [[swap_order[j][1] for j in range(i+1)] for i in range(min(len(swap_order),self.MAX_SWAPSET))]
+                    if self.seqgroup:
+                        swap_list = [[x for _,x in swap_order if self.get_protein(x) == this_prot and self.org_dict[x] in self.seqgroup]]
+                    for swaps in swap_list:
+                        if not all([self.get_protein(swaps[i]) == this_prot for i in range(len(swaps))]):  # ignore if it's not the same protein
                             break
-                        if self.get_protein(ID) != this_prot:  # ignore if it's not the same protein
-                            continue
 
+                        # we add 4 new groups for conservation measure, this_ortho, other_ortho, this_swap, other_swap
+                        this_prot_ortho = this_prot_orthologs.copy()
+                        other_prot_ortho = other_prot_orthologs.copy()
+                        this_prot_swap = set()
+                        other_prot_swap = set()
+                        swap_set = set()
                         # SWAPPING LABELS
-                        # remove the closest protein from the group of this protein, put in the swap group of this protein
-                        this_prot_orthologs.remove(ID)
-                        this_prot_swap.add(ID)
+                        for ID in swaps:
+                            this_prot_ortho.remove(ID)
+                            this_prot_swap.add(ID)
 
-                        # remove all the others
-                        for lab in self.paralogs[this_prot][ID]:
-                            if lab in other_prot_orthologs:
-                                other_prot_swap.add(lab)
-                                other_prot_orthologs.remove(lab)
-                        swap_set.add("{}".format(self.org_dict[ID]))
+                            # remove all the others
+                            for lab in self.paralogs[this_prot][ID]:
+                                if lab in other_prot_ortho:
+                                    other_prot_swap.add(lab)
+                                    other_prot_ortho.remove(lab)
+                            swap_set.add("{}".format(self.org_dict[ID]))
 
                         # META SCORE
-                        this_score_meta, this_score_ss, report_meta, report_ss = self.get_new_score(this_prot_orthologs, other_prot_orthologs, this_prot_swap, other_prot_swap, i)
+                        this_score_meta, this_score_ss, report_meta, report_ss = self.get_new_score(this_prot_ortho, other_prot_ortho, this_prot_swap, other_prot_swap, i)
                         if this_score_meta > best_score_meta:
                             best_score_meta = this_score_meta
                             best_report_meta = report_meta
@@ -560,7 +619,11 @@ class Dirphy:
         df = pd.DataFrame(self.output_df_dict_meta)  # NEED TO ADD THE STUFF
         df.T.to_csv(csv_out_file_path, sep=",")
         ax = sns.displot(data=df.T, x='score')
+        if self.base_prob:
+            plt.axvline(self.base_prob, color='r', label="Base chance: {:02f}".format(self.base_prob))
+            plt.legend()
         plt.savefig(dist_plot_meta)
+
         # ss
         csv_out_file_path = self.output_path + "inverted_residues_ss.csv"
         string_out_file_path = self.output_path + "inverted_residues_ss.txt"
@@ -570,7 +633,109 @@ class Dirphy:
         df = pd.DataFrame(self.output_df_dict_ss)  # NEED TO ADD THE STUFF
         df.T.to_csv(csv_out_file_path, sep=",")
         ax = sns.displot(data=df.T, x='score')
+        if self.base_prob:
+            plt.axvline(self.base_prob, color='r', label="Base chance: {:02f}".format(self.base_prob))
+            plt.legend()
         plt.savefig(dist_plot_ss)
+
+        # logos
+        if self.base_prob:
+            fsize =lambda poslist: (int(np.log10(len(poslist)) * 20 + 10),
+                     int(len(poslist) / 100 + 8))
+            label = "{0}-Others,{0}-{2},{1}-{2},{1}-Others".format(self.p1, self.p2, self.groupname).split(",")
+            seqlist = self.get_logo_sequence_list()
+            # meta
+            meta_logo_path = self.output_path + "meta_logo.png"
+            poslist_meta = self.get_highscore_positions_meta()
+            fig, axes = plt.subplots(4, 1, figsize=fsize(poslist_meta))
+            for i in range(4):
+                Dirphy.make_logo(axes[i], label[i], seqlist[i], poslist_meta)
+            plt.tight_layout()
+            plt.savefig(meta_logo_path, dpi=300)
+
+            # ss
+            ss_logo_path = self.output_path + "ss_logo.png"
+            poslist_ss = self.get_highscore_positions_ss()
+            fig, axes = plt.subplots(4, 1, figsize=fsize(poslist_ss))
+            for i in range(4):
+                Dirphy.make_logo(axes[i], label[i], seqlist[i], poslist_ss)
+            plt.tight_layout()
+            plt.savefig(ss_logo_path, dpi=300)
+
+    @staticmethod
+    def make_logo(ax, label, seq_list, poslist):
+        import logomaker as lm
+        raw_seqs = []
+        for seq in seq_list:
+            raw_seqs.append("".join([seq[x-1] for x in poslist]))
+        counts_mat = lm.alignment_to_matrix(raw_seqs)
+        normalized_mat = lm.transform_matrix(counts_mat, normalize_values=True)
+        logo = lm.Logo(normalized_mat, stack_order='small_on_top',
+                       font_name='Futura',
+                       font_weight='ultralight',
+                       color_scheme='chemistry',
+                       vpad=0.1,
+                       width=.9,
+                       ax=ax)
+        logo.style_spines(visible=False)
+        logo.ax.set_yticks([0, .5, 1])
+        logo.ax.set_xticks(range(len(poslist)))
+        logo.ax.set_xticklabels([str(x) for x in poslist], fontsize='small')
+        logo.ax.set_ylabel(label)
+
+    def get_logo_sequence_list(self):
+        """
+        returns sequences for groups a, b, c, and d
+        a is others-p1
+        b is group1-p1
+        c is group1-p2
+        d is others-p2
+        :return:
+        """
+
+        seqlist = []
+
+        # a
+        seqlist.append([self.ds[ID] for ID in self.orthologs[self.p1] if self.org_dict[ID] not in self.seqgroup])
+
+        # b
+        seqlist.append([self.ds[ID] for ID in self.orthologs[self.p1] if self.org_dict[ID] in self.seqgroup])
+
+        # c
+        seqlist.append([self.ds[ID] for ID in self.orthologs[self.p2] if self.org_dict[ID] in self.seqgroup])
+
+        # d
+        seqlist.append([self.ds[ID] for ID in self.orthologs[self.p2] if self.org_dict[ID] not in self.seqgroup])
+
+        return seqlist
+
+    def get_highscore_positions_meta(self):
+        """
+        get the positions for the logo, 0 based
+        :return:
+        """
+        unsorted_poslist = []
+        for i in range(self.output_df_counter_meta):
+            if self.output_df_dict_meta[i]["score"] > self.base_prob:
+                unsorted_poslist.append((self.output_df_dict_meta[i]["score"],self.output_df_dict_meta[i]["pos"]))
+        sorted_poslist = sorted(unsorted_poslist,reverse=True)
+        poslist = sorted([x for _,x in sorted_poslist[:min(50,len(sorted_poslist))]])
+
+        return poslist
+
+    def get_highscore_positions_ss(self):
+        """
+        get the positions for the logo, 0 based
+        :return:
+        """
+        unsorted_poslist = []
+        for i in range(self.output_df_counter_ss):
+            if self.output_df_dict_ss[i]["score"] > self.base_prob:
+                unsorted_poslist.append((self.output_df_dict_ss[i]["score"], self.output_df_dict_ss[i]["pos"]))
+        sorted_poslist = sorted(unsorted_poslist, reverse=True)
+        poslist = sorted([x for _, x in sorted_poslist[:min(50, len(sorted_poslist))]])
+
+        return poslist
 
     @staticmethod
     def find_conservation_blosum(pos, seqlist):
@@ -611,6 +776,146 @@ class Dirphy:
     def rename(name):
         return name.replace("_", " ").replace("|", " ")
 
+
+class BGprob:
+    """
+    This class is used to calculate the background probability of specie-specific adaptation and residue inversion
+    It's based on the simple model of a duplication, 4 branches, 2 species evolution, with equal branch lengths between
+    the duplication branches (L1, 2 branches) and the speciation branches (L2, 4 branches).
+    The probability of a mutation is calculated from the rate with the following formula: P = 1 - e^(-lambda).
+
+    """
+    def __init__(self):
+
+        self.R = 1
+        self.saved_probs = {}
+
+    def get_prob(self, L1, L2):
+        """
+        get the probability of s-s adaptation and residue inversion from the dictionary, or if not found for the request
+        L1 and L2, calculates, saves and returns it.
+        :param L1:
+        :param L2:
+        :return:
+        """
+
+        if (L1, L2) in self.saved_probs:
+            return self.saved_probs[(L1, L2)]
+        else:
+            return self.calculate_prob(self, L1, L2)
+
+    def calculate_prob(self, L1, L2):
+        """
+        calculate the probability of s-s adaptation and residue inversion, saves it and return it
+        :param L1:
+        :param L2:
+        :return:
+        """
+        prob = 0
+        for i in range(64):
+            pi = self.outcome_probability(i, L1=L1, L2=L2, r=self.R)
+            prob = self.update_state_prob(i, pi, prob)
+
+        self.saved_probs[(L1,L2)] = prob
+        return prob
+
+    @staticmethod
+    def get_normalized_bit(val, bit_index):  # to get 0 and 1 pos
+        return (val >> bit_index) & 1
+
+    @staticmethod
+    def mi(a, b, anc):  # inner match so with 1 = 1
+        if a == 2:
+            if b == 1:
+                return 0
+            else:
+                return 1 / 19
+        elif a == 1:
+            if b == 1 and anc == 1:
+                return 1
+            elif b == 1 and anc == 0:
+                return 1 / 19
+            else:
+                return 0
+        elif a == 0:
+            if b == 0:
+                return 1
+            elif b == 1:
+                return 0
+
+    @staticmethod
+    def mo(a, b):  # outer match, 1 != 1
+        """ this one changed, now """
+        if a == 2:
+            if b == 0:
+                return 1 / 19
+            elif b == 1:
+                return (18 / 19) * (1 / 19)
+            elif b == 2:
+                return (18 / 19) * (18 / 19 ** 2) + (1 / 19) * (
+                            1 / 19)  # if the ancestor 1 matched, then 2 matches with 1/19, otherwise
+                # it matches in 18 out of 19^2 cases ( because anc is on a different state)
+        elif a == 1:
+            if b == 0:
+                return 0
+            elif b == 1:
+                return 1 / 19
+            else:
+                return (18 / 19) * (
+                            1 / 19)  # only if the ancestor of 2 didn't match with 1, they can match with prob 1/19
+        else:
+            if b == 2:
+                return 1 / 19
+            elif b == 1:
+                return 0
+            else:
+                return 1
+
+    def outcome_probability(self, X, L1, L2, r):
+        """
+        X is a string of six binary digits
+        r = 1 # modifier
+        L1 = rate * r # mut before species split
+        L2 = rate * r # mut after species split
+        """
+
+        assert X.bit_length() <= 6, "too big number"
+        L1 = L1 * r
+        L2 = L2 * r
+        L1 = (1 - np.e ** -L1)  # now it's a probability
+        L2 = (1 - np.e ** -L2)  # now it's a probability
+
+        p1 = [1 - L1, L1]  # each node 1 counts twice
+        p2 = [1 - L2, L2]  # 0 means no mutation, with prob 1-p. 1 means mutation, with prob p
+
+        prob = 1
+
+        for i in range(4, 6):  # ANCESTORS
+            prob *= p1[BGprob.get_normalized_bit(X, i)]
+        for i in range(4):  # LEAF NODES
+            prob *= p2[BGprob.get_normalized_bit(X, i)]
+        # print(bin(X),prob)
+        return prob
+
+    def update_state_prob(self, X, pX, prob):
+        """
+        updates the outcome probability of inversion
+        probability of both outer match times the min of the probabilities of inner match
+        the probability of s-s and of inversion is the same and is the probability of outer match times
+        """
+        a0 = 0
+        a1 = BGprob.get_normalized_bit(X, 5)
+        a2 = BGprob.get_normalized_bit(X, 4)
+        l1 = a1 + BGprob.get_normalized_bit(X, 3)
+        l2 = a1 + BGprob.get_normalized_bit(X, 2)
+        l3 = a2 + BGprob.get_normalized_bit(X, 1)
+        l4 = a2 + BGprob.get_normalized_bit(X, 0)
+        # got the leaf status
+
+        inversion_prob = BGprob.mo(l1,l3) * BGprob.mo(l2,l4) * (1-min([BGprob.mi(l1,l2,a1),BGprob.mi(l3,l4,a2)]))  # outer match and not inner match
+
+        prob += inversion_prob * pX
+        return prob
 
 def main(argv):
 

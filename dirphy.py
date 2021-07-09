@@ -488,8 +488,7 @@ class Dirphy:
 
     def get_new_score(self, this_prot, other_prot, this_prot_swap, other_prot_swap, i):
         """
-        #now t7: compare the swapping pos conservation and the clone combaciante conservation, all scores are positive
-        t7.5: like t7, but get the minimum of the 4 scores times 4
+        #t8: the joint probability of having a swapped residue
         :param this_clones:
         :param other_clones:
         :param ds:

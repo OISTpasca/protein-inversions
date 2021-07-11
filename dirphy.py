@@ -474,7 +474,7 @@ class Dirphy:
         this_clone_str = "".join([self.ds[x][i] for x in this_prot_orthologs])
         other_clone_str = "".join([self.ds[x][i] for x in other_prot_orthologs])
         # if the position is gap, just return score zero
-        if pos == "-" or pos == "X":
+        if pos == "-" or pos == "X" or other_pos == "-" or other_pos == "X":
             return 0.0, 0.0
         # find if both strings pass the min cover setting, otherwise score is zero
         non_gap_percent = lambda x: len(x.replace("-", "")) / len(x)

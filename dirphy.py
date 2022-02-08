@@ -206,7 +206,7 @@ class Dirphy:
         seqgroup = []
         if args.specify_cluster_set:
             seqgroup = args.specify_cluster_set.split(",")
-            assert all([x in self.organisms for x in seqgroup])
+            assert all([x in self.organisms for x in seqgroup]), "not all organisms found in the list.\norganisms: {}\nlist: {}".format(",".join(sorted(seqgroup)),",".join(sorted(self.organisms)))
         return seqrun, seqgroup
 
     def get_output_df(self):
